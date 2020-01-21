@@ -3,6 +3,8 @@ Scripts to find overlapping HST data
 """
 
 import time
+import traceback
+import inspect
 from . import query, utils
   
 def test():
@@ -165,7 +167,7 @@ def find_overlaps(tab, buffer_arcmin=1., filters=[], instruments=['WFC3/IR', 'WF
 
     from astropy.table import Table
 
-    from shapely.geometry import Polygon
+    from shapely.geometry import Polygon, Point
     from descartes import PolygonPatch
         
     import time
@@ -183,21 +185,53 @@ def find_overlaps(tab, buffer_arcmin=1., filters=[], instruments=['WFC3/IR', 'WF
     else:
         poly_query = False
         for i in range(len(tab)):
-            poly = query.parse_polygons(tab['footprint'][i])#[0]
-            pshape = None
-            for pi in poly:
-                try:
-                    psh = Polygon(pi)
-                except:
-                    continue
-                    
-                if pshape is None:
-                    pshape = psh
-                else:
-                    pshape = pshape.union(psh)
-        
+            
+            pshape, is_bad, poly = query.instrument_polygon(tab[i])
+            
+            # poly = query.parse_polygons(tab['footprint'][i])#[0]
+            # pt = Point(tab['ra'][i], tab['dec'][i])
+            # pt_buff = pt.buffer(20./60)
+            # 
+            # pshape = None
+            # for pi in poly:
+            #     try:
+            #         psh = Polygon(pi)
+            #     except:
+            #         continue
+            #     
+            #     if psh.intersection(pt_buff).area == 0:
+            #         continue
+            #            
+            #     if pshape is None:
+            #         pshape = psh
+            #     else:
+            #         pshape = pshape.union(psh)
+            #     
+            #     # Some guide star problems
+            #     if pshape.area*3600 > 20:
+            #         continue
+            # 
+            # # Expected area, neglects subarrays
+            # if tab[i]['instrument_name'] in utils.INSTRUMENT_AREAS:
+            #     area = utils.INSTRUMENT_AREAS[tab[i]['instrument_name']]
+            # else:
+            #     area = 8.
+            # 
+            # msg = f"Footprint problem: i={i} {tab[i]['obs_id']}, area={area:4.1f}, {tab[i]['instrument_name']:>10}, npoly={len(poly)}, expstart={tab[i]['expstart']}"
+            # 
+            # # Got to the end and pshape is None, probably because doesn't 
+            # # overlap with the target position 
+            # # (a posteriori alignment problems?)
+            # if pshape is None:
+            #     print(msg)
+            #     pshape = pt.buffer(np.sqrt(area)*np.sqrt(2)/60.)
+            # else:
+            #     if pshape.area < 0.1*area/3600:
+            #         print(msg)
+            #         pshape = pt.buffer(np.sqrt(area)*np.sqrt(2)/60.)
+                
             polygons.append(pshape.buffer(poly_buffer))
-    
+            
     # match_poly = [polygons[0]]
     # match_ids = [[0]]
     # 
@@ -300,7 +334,7 @@ def find_overlaps(tab, buffer_arcmin=1., filters=[], instruments=['WFC3/IR', 'WF
         
         box_radius = np.max([xradius*1.5, yradius*1.5, min_radius])
         box = [ra, dec, box_radius]
-        
+                
         # Build target name from RA/Dec
         jname = utils.radec_to_targname(box[0], box[1], round_arcsec=(4, 60), targstr=targstr)
         jname = jstr.format(prefix=prefix, jname=jname, suffix=suffix) #prefix+jname+suffix
@@ -314,10 +348,12 @@ def find_overlaps(tab, buffer_arcmin=1., filters=[], instruments=['WFC3/IR', 'WF
         if use_parent:
             xtab = tab
         else:
-            try:
-                xtab = query.run_query(box=box, proposal_id=proposal_id, instruments=instruments, filters=filters, base_query=base_query, **extra)
-            except:
-                print('Failed!')
+            xtab = query.run_query(box=box, proposal_id=proposal_id, instruments=instruments, filters=filters, base_query=base_query, **extra)
+            if isinstance(xtab, dict):
+                utils.log_comment(jname+'.failed', xtab, verbose=False, 
+                                  show_date=True, mode='a')
+                utils.log_exception(jname+'.failed', traceback, 
+                                    verbose=True, mode='a')
                 continue
                 
             if not include_subarrays:
@@ -349,23 +385,53 @@ def find_overlaps(tab, buffer_arcmin=1., filters=[], instruments=['WFC3/IR', 'WF
         # Only include ancillary data that directly overlaps with the primary
         # polygon
         pointing_overlaps = np.zeros(len(xtab), dtype=bool)
-        for j in range(len(xtab)):
-            try:
-                poly = query.parse_polygons(xtab['footprint'][j])#[0]
-            except:
-                pointing_overlaps[j] = False
+        for j in range(len(xtab)):            
+            pshape, is_bad, poly = query.instrument_polygon(xtab[j])
+            # if is_bad:
+            #     print('xxxx', pshape.centroid.xy, pshape.area*3600., p.centroid.xy, p.area*3600)
                 
-            pshape = None
-            for pi in poly:
-                try:
-                    psh = Polygon(pi)
-                except:
-                    continue
-                    
-                if pshape is None:
-                    pshape = psh
-                else:
-                    pshape = pshape.union(psh)
+            # try:
+            #     poly = query.parse_polygons(xtab['footprint'][j])#[0]
+            # except:
+            #     pointing_overlaps[j] = False
+            #     continue
+            
+            # pshape = None
+            # for pi in poly:
+            #     try:
+            #         psh = Polygon(pi)
+            #     except:
+            #         continue
+            #     
+            #     if psh.intersection(pt_buff).area == 0:
+            #         continue
+            #         
+            #     if pshape is None:
+            #         pshape = psh
+            #     else:
+            #         pshape = pshape.union(psh)
+            # 
+            # # Expected area, neglects subarrays
+            # if xtab[j]['instrument_name'] in utils.INSTRUMENT_AREAS:
+            #     area = utils.INSTRUMENT_AREAS[xtab[j]['instrument_name']]
+            # else:
+            #     area = 8.
+            # 
+            # msg = f"Footprint problem: i={j} {xtab[j]['obs_id']}, area={area:4.1f}, {xtab[j]['instrument_name']:>10}, npoly={len(poly)}, expstart={xtab[j]['expstart']}"
+            # 
+            # # Got to the end and pshape is None, probably because doesn't 
+            # # overlap with the target position 
+            # # (a posteriori alignment problems?)
+            # if pshape is None:
+            #     print(msg)
+            #     pshape = pt.buffer(np.sqrt(area)*np.sqrt(2)/60.)
+            # else:
+            #     if pshape.area < 0.1*area/3600:
+            #         print(msg)
+            #         pshape = pt.buffer(np.sqrt(area)*np.sqrt(2)/60.)
+            
+            isect = p.intersection(pshape.buffer(0.0001))
+            pointing_overlaps[j] = isect.area > min_area*pshape.area
                                     
             try:
                 isect = p.intersection(pshape.buffer(0.0001))
@@ -392,7 +458,7 @@ def find_overlaps(tab, buffer_arcmin=1., filters=[], instruments=['WFC3/IR', 'WF
                 ax.add_patch(PolygonPatch(p, alpha=parent_alpha))
             else:
                 colors = query.show_footprints(tab[idx], ax=ax, alpha=parent_alpha)
-        
+                
         ax.scatter(box[0], box[1], marker='+', color='k', zorder=1e4, alpha=0.8)
         
         if not poly_query:
@@ -715,24 +781,44 @@ def split_associations(tab, force_split=False, root=None, assoc_args=ASSOC_ARGS,
         label = label.format(root, prog, targ, inst, filt, ix)
         
         poly_i = None
-        for fp in tab['footprint'][sel]:
-            for p in query.parse_polygons(fp):
-                p_j = Polygon(p).buffer(0.001)
-                if tab_poly is None:
-                    tab_poly = p_j.buffer(0.001)
+        
+        for j in range(sel.sum()):
+            p_j, is_bad, poly = query.instrument_polygon(tab[sel][j])
                 
-                if not tab_poly.buffer(2).intersects(p_j.buffer(2)):
-                    print('Skip')
+            if tab_poly is None:
+                tab_poly = p_j.buffer(0.001)
+            
+            if not tab_poly.buffer(2).intersects(p_j.buffer(2)):
+                print('Skip')
+                continue
+                
+            if poly_i is None:
+                poly_i = p_j
+            else:
+                if not poly_i.buffer(2).intersects(p_j.buffer(2)):
+                    print('x Skip')
                     continue
-                    
-                if poly_i is None:
-                    poly_i = Polygon(p)
-                else:
-                    if not poly_i.buffer(2).intersects(p_j.buffer(2)):
-                        print('x Skip')
-                        continue
 
-                    poly_i = poly_i.union(p_j)
+                poly_i = poly_i.union(p_j)
+        
+        # for fp in tab['footprint'][sel]:
+        #     for p in query.parse_polygons(fp):
+        #         p_j = Polygon(p).buffer(0.001)
+        #         if tab_poly is None:
+        #             tab_poly = p_j.buffer(0.001)
+        #         
+        #         if not tab_poly.buffer(2).intersects(p_j.buffer(2)):
+        #             print('Skip')
+        #             continue
+        #             
+        #         if poly_i is None:
+        #             poly_i = Polygon(p)
+        #         else:
+        #             if not poly_i.buffer(2).intersects(p_j.buffer(2)):
+        #                 print('x Skip')
+        #                 continue
+        # 
+        #             poly_i = poly_i.union(p_j)
                         
         polys[label] = poly_i
     
@@ -780,6 +866,19 @@ def make_association_figure(tab, polys, highlight=None, root=None, xsize=6, nlab
     grism_patches = {}
     grism_colors = {'g141':'r', 'g102':'orange', 'g800l':'b'}
     
+    # Fix "CLEAR" filters
+    for i, filt_i in enumerate(tab['filter']):
+        if 'clear' in filt_i.lower():
+            spl = filt_i.lower().split(';')
+            if len(spl) > 1:
+                for s in spl:
+                    if 'clear' not in s:
+                        #print(filt_i, s)
+                        filt_i = s.upper()
+                        break
+            
+            tab['filter'][i] = filt_i.upper()
+        
     xra, yra = None, None
     for i in so:
         # in polys:
@@ -787,7 +886,14 @@ def make_association_figure(tab, polys, highlight=None, root=None, xsize=6, nlab
         p_i = polys[f]
         xfilt_i = f.split('_')[-1]
         filt_i = xfilt_i.split('-')[-1]
-        
+        if 'clear' in filt_i.lower():
+            spl = filt_i.split(';')
+            if len(spl) > 1:
+                for s in spl:
+                    if 'clear' not in s:
+                        filt_i = s
+                        break
+                                
         if hasattr(p_i, '__len__'):
             all_p = [p for p in p_i]
         else:
@@ -1072,6 +1178,301 @@ def compute_associations(tab, max_sep=0.5, max_pa=0.05, max_time=1e4/86400., mat
         assoc = 48
         sel = tab['assoc_idx'] == assoc
         tabs = overlaps.find_overlaps(tab[sel], use_parent=True, buffer_arcmin=0.1, filters=['F814W'], proposal_id=[], instruments=['ACS/WFC'], close=False, suffix='-f606w-{0:02d}'.format(assoc))
+
+#### URLs for IPAC / Spitzer queries
+
+# API table output
+IPAC_URL = "https://sha.ipac.caltech.edu/applications/Spitzer/SHA/servlet/DataService?RA={ra}&DEC={dec}&SIZE={size}&VERB=3&DATASET=ivo%3A%2F%2Firsa.ipac%2Fspitzer.level{level}"
+
+IPAC_AOR_URL = "https://irsa.ipac.caltech.edu/applications/Spitzer/SHA/servlet/DataService?REQKEY={aor}&VERB=3&DATASET=ivo%3A%2F%2Firsa.ipac%2Fspitzer.level{level}"
+
+# SHA web query
+SHA_URL = "https://sha.ipac.caltech.edu/applications/Spitzer/SHA/#id=SearchByPosition&RequestClass=ServerRequest&DoSearch=true&SearchByPosition.field.radius={size}&SearchByPosition.field.matchByAOR=false&UserTargetWorldPt={ra};{dec};EQ_J2000&SimpleTargetPanel.field.resolvedBy=nedthensimbad&MoreOptions.field.prodtype=aor,pbcd,bcd,supermosaic,inventory&InstrumentPanel.field.irac=_all_&InstrumentPanel.field.mips=_all_&InstrumentPanel.field.irs=_none_&InstrumentPanel.field.panel=instrument&InventorySearch.radius={size}&shortDesc=Position&isBookmarkAble=true&isDrillDownRoot=true&isSearchResult=true"
         
+def spitzer_query(tab, level=1, make_figure=True, cmap='Spectral', xsize=6, nlabel=3, min_size=4, maxwavelength=20):
+    """
+    Query the Spitzer archive around an HST pointing table
+    """
+    import time
+    import urllib
+    import numpy as np
+    import matplotlib.pyplot as plt
     
+    from astropy.table import Table
+    from astropy.time import Time
+    
+    from shapely.geometry import Polygon
+    from descartes import PolygonPatch
+            
+    if False:
+        tab = utils.read_catalog('j021744m0346_footprint.fits')
+        tab = utils.read_catalog('j224324m0936_footprint.fits')
+        root='j012016p2134'
+        tab = utils.read_catalog('{0}_footprint.fits'.format(root))
+    
+    if isinstance(tab, str):
+        tab = utils.read_catalog('{0}_footprint.fits'.format(tab))
+            
+    meta = tab.meta
+    xr = (meta['XMIN'], meta['XMAX'])
+    yr = (meta['YMIN'], meta['YMAX'])
+    ra, dec = meta['BOXRA'], meta['BOXDEC']
+    
+    cosd = np.cos(dec/180*np.pi)
+    dx = (xr[1]-xr[0])*cosd*60
+    dy = (yr[1]-yr[0])*60
+    
+    box_width = np.maximum(dx, dy)
+    query_size = np.maximum(min_size, box_width/2)/60.
+    
+    if level == -1:
+        # First query Level 2 and then get by AOR
+        query_url = IPAC_URL.format(ra=ra, dec=dec, size=query_size, level=2)
+        
+        f = urllib.request.urlopen(query_url)
+        data = f.read().decode('utf-8')
+        f.close()
+        
+        lev2 = Table.read(data, format='ascii.ipac')
+        skip = np.array([l.startswith('IRS') for l in lev2['modedisplayname']])
+        
+        # only up to 24um
+        skip |= lev2['minwavelength'] > maxwavelength
+        
+        aors = np.unique(lev2['reqkey'][~skip])
+        print('      level=-1, query by N={0} AORs'.format(len(aors)))
+        
+        aor_string = ','.join(['{0}'.format(aor) for aor in aors])
+        
+        query_url = IPAC_AOR_URL.format(aor=aor_string, level=1)
+        
+        f = urllib.request.urlopen(query_url)
+        data = f.read().decode('utf-8')
+        f.close()
+        
+        level = 1
+        
+    else:
+        query_url = IPAC_URL.format(ra=ra, dec=dec, size=query_size, level=level)
+    
+        f = urllib.request.urlopen(query_url)
+        data = f.read().decode('utf-8')
+        f.close()
+    
+    mode_data = {}
+    modes = ['IRAC 3.6um', 'IRAC 4.5um', 'IRAC 5.8um', 'IRAC 8.0um', 
+             'MIPS 24um', 'MIPS 70um', 'MIPS 160um']
+    
+    try:
+        ipac = Table.read(data, format='ascii.ipac')
+        
+        if level == 2:
+            #ipac['exptime'] = ipac['endtime'] - ipac['begintime']
+            dt = Time(ipac['endtime']) - Time(ipac['begintime']) 
+            ipac['exposuretime'] = dt.sec
+             
+        for mode in modes:
+            m = ipac['wavelength'] == mode
+            mode_i = {}
+            mode_i['exptime'] = ipac['exposuretime'][m].sum()
+            mode_i['N'] = m.sum()
+            mstr = mode.replace(' ','').replace('.','')[:-2]
+            mode_i['short'] = mstr
+            mode_data[mode] = mode_i
+
+            ipac.meta['T{0}'.format(mstr)] = int(mode_i['exptime']), 'Exposure time in {0}, seconds'.format(mode)
+            ipac.meta['N{0}'.format(mstr)] = mode_i['N'], 'Number of BCD files for {0}'.format(mode)
+    
+    except:
+        ipac = Table()
+        ipac['x'] = [0]
+        
+        for mode in modes:
+            mode_i = {}
+            mode_i['exptime'] = 0.
+            mode_i['N'] = 0
+            mstr = mode.replace(' ','').replace('.','')[:-2]
+            mode_i['short'] = mstr
+            mode_data[mode] = mode_i
+
+            ipac.meta['T_{0}'.format(mstr)] = int(mode_i['exptime']), 'Exposure time in {0}, seconds'.format(mode)
+            ipac.meta['N_{0}'.format(mstr)] = mode_i['N'], 'Number of BCD files for {0}'.format(mode)
+                    
+    ipac.meta['URL'] = query_url
+    ipac.meta['TQUERY'] = (time.ctime(), 'Timestamp of query execution')
+    ipac.meta['LEVEL'] = (level, 'IPAC calibration level')
+    ipac.meta['RA'] = (ra, 'Query center, RA')
+    ipac.meta['DEC'] = (dec, 'Query center, Dec')
+    ipac.meta['R'] = (query_size, 'Query radius, deg')
+    
+    ipac.write('{0}_ipac.fits'.format(meta['NAME']), overwrite=True)
+    
+    if 'x' in ipac.colnames:
+        return ipac, None
+        
+    if make_figure:
+        colors = list(plt.cm.get_cmap(cmap)(np.linspace(0, 0.35, 4)))
+        colors += list(plt.cm.get_cmap(cmap)(np.linspace(0.6, 1, 3))[::-1])
+
+        #modes = np.unique(ipac['wavelength'])
+        fp = np.array([ipac['ra1'], ipac['dec1'], ipac['ra2'], ipac['dec2'], 
+                       ipac['ra3'], ipac['dec3'], ipac['ra4'], ipac['dec4']])
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        #ax.set_xlim(xr)
+        #ax.set_ylim(yr)
+
+        # Grow by factor of 2
+        #expand = 2
+        
+        expand = np.maximum(min_size*2/np.minimum(dx, dy), 1)
+        
+        ax.set_xlim(ra+dx/60/2*expand/cosd, ra-dx/60/2*expand/cosd)
+        ax.set_ylim(dec-dy/60/2*expand, dec+dy/60/2*expand)
+        
+        ax.scatter(ra, dec, marker='+', color='k')
+        
+        # HST patch
+        p0 = np.array([[xr[0], yr[0]],
+                       [xr[0], yr[1]],
+                       [xr[1], yr[1]],
+                       [xr[1], yr[0]]])
+
+        p_hst = None
+        for fph in tab['footprint']:
+            for p in query.parse_polygons(fph):
+                p_j = Polygon(p).buffer(0.001)
+                if p_hst is None:
+                    p_hst = p_j
+                else:
+                    p_hst = p_hst.union(p_j)
+        
+        ipac['with_hst'] = False
+        
+        for i, mode in enumerate(modes):
+            m = ipac['wavelength'] == mode
+            mode_i = mode_data[mode]
+            if m.sum() == 0:
+                mode_i['fp'] = None
+                continue
+                
+            fps = fp[:,m]
+            fp_i = Polygon(fps[:,0].reshape((-1,2))).buffer(0.1/3600.)
+            fp_i_hst = Polygon(fps[:,0].reshape((-1,2))).buffer(0.1/3600.)
+            with_hst = np.zeros(m.sum(), dtype=bool)
+            for j, f in enumerate(fps.T):
+                fp_j = Polygon(f.reshape((-1,2))).buffer(0.1/3600.)
+                with_hst[j] = p_hst.intersection(fp_j).area > 0
+                if with_hst[j]:
+                    fp_i_hst = fp_i_hst.union(fp_j)
+                    ax.add_patch(PolygonPatch(fp_j, ec=colors[i], fc='None', 
+                                          alpha=0.05))
+                    
+                fp_i = fp_i.union(fp_j)
+             
+            mode_i['fp'] = fp_i
+            ipac['with_hst'][m] |= with_hst
+            
+            label = '{0} - {1:3.1f}/{2:3.1f} hr'.format(mode_i['short'], mode_i['exptime']/3600., ipac['exposuretime'][m][with_hst].sum()/3600.)
+            
+            if mode_i['short'] in ['IRAC36', 'IRAC45']:
+                ax.add_patch(PolygonPatch(fp_i_hst, ec=colors[i],
+                                          fc=colors[i], 
+                                          alpha=0.2, label=label))
+                
+                ax.add_patch(PolygonPatch(fp_i, ec=colors[i], fc=colors[i], 
+                                      alpha=0.05, label=label))
+                
+            else:
+                ax.add_patch(PolygonPatch(fp_i, ec=colors[i], fc='None', 
+                                      alpha=0.8, label=label, 
+                                      linestyle='--'))
+                
+        ax.add_patch(PolygonPatch(p_hst, ec='k', fc='None', 
+                              alpha=0.8, label='HST'))
+               
+        ax.grid()
+        ax.set_title('{0} - Level{1}'.format(meta['NAME'], level))
+        
+        #ax.set_xlim(ax.get_xlim()[::-1])
+        
+        ax.set_aspect(1/cosd)
+        ax.legend(ncol=2, fontsize=6, loc='upper right')
+        fig.set_size_inches(xsize, xsize*np.clip(dy/dx, 0.2, 5))
+        
+        if nlabel > 0:
+            draw_axis_labels(ax=ax, nlabel=nlabel)
+        
+        ax.text(0.03, 0.03, time.ctime(), fontsize=5, transform=ax.transAxes, ha='left', va='bottom')
+
+        fig.tight_layout(pad=0.2)
+        fig.savefig('{0}_ipac.png'.format(meta['NAME']))
+        ipac.write('{0}_ipac.fits'.format(meta['NAME']), overwrite=True)
+    
+    return ipac, fig
+
+def make_all():
+    """
+    Make all IRAC queries
+    """
+    import glob
+    files = glob.glob('*footprint.fits')
+    files.sort()
+    plt.ioff()
+    failed = []
+    for file in files:
+        if os.path.exists(file.replace('_footprint', '_ipac')):
+            print('skip {0}'.format(file))
+            continue
+
+        else:
+            print(file)
+        
+        tab = utils.read_catalog(file)
+        if 'NASSOC' in tab.meta:
+            test = tab.meta['NASSOC'] < 100
+        else:
+            test = True
+        
+        if 'XMIN' not in tab.meta:
+            print('Split {0}'.format(file))
+            _res = overlaps.split_associations(tab)
+                
+        if test:
+            try:
+                ipac, fig = spitzer_query(tab, min_size=10, level=2)
+                if len(ipac) < 50:
+                    ipac, fig = spitzer_query(tab, min_size=10, level=1)
+                    
+                plt.close('all')
+            except:
+                failed.append(file)
+    
+    plt.ion()
+    
+    if False:
+        import numpy as np
+        import matplotlib.pyplot as plt                                                                                                         
+        from mastquery.overlaps import spitzer_query
+        from grizli import utils
+        
+        fields = np.loadtxt('fields.list', dtype=str)
+        
+        #for field in fields:
+        
+        files = glob.glob('*footprint.fits')
+        files.sort()
+        for file in files:
+            if os.path.exists(file.replace('footprint','ipac')):
+                continue
+            
+            field = file.split("_footprint")[0]
+            tab = utils.read_catalog('{0}_footprint.fits'.format(field))
+            print(field, tab.meta['BOXRAD'])
+            if tab.meta['BOXRAD'] > 11:
+                continue
+                
+            ipac, fig = spitzer_query(tab, min_size=10, level=-1)
+            plt.close('all')
     
